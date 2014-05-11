@@ -26,10 +26,15 @@
 -- Steps to use:
 --  --Connect SDA to the left-most pin, which has site location B2.
 --  --Connect SCL to the pin directly to the right, which has site location A3.
---  --Either leave the ADDR SEL pin floating, or modify the address generic using the
---    instructions below.
 --  --Connect I2C light sensor to 3.3V power supply. Observe readings on seven-segment
 --    display!
+--
+--  You can adjust which of the sensors you're reading from using SW(1 downto 0),
+--  as follows:
+--      00 | Clear
+--      01 | Red
+--      10 | Green
+--      11 | Blue
 --  
 --  Pull-up reistors are optional, as the Basys' board's internal pull-ups are engaged,
 --  but their use is recommended. If you do choose to use them, you may want to remove
