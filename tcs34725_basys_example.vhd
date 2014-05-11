@@ -39,6 +39,7 @@
 
 library ieee;
 use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
 
 
 entity tcs34725_basys_example is
@@ -52,6 +53,9 @@ entity tcs34725_basys_example is
     sda : inout std_logic;
     scl : inout std_logic;
 
+    --Color selection inputs
+    sw  : in std_logic_vector(1 downto 0);
+
     --Seven segment display outputs.
     seg : out std_logic_vector(6 downto 0);
     an  : out std_logic_vector(3 downto 0)
@@ -59,7 +63,8 @@ entity tcs34725_basys_example is
 end tcs34725_basys_example;
 
 architecture Behavioral of tcs34725_basys_example is
-  signal light_intensity : std_logic_vector(15 downto 0);
+  signal active_intensity, clear_intensity, red_intensity,
+         green_intensity, blue_intensity : std_logic_vector(15 downto 0);
 begin
 
   --
@@ -80,16 +85,34 @@ begin
     reset           => reset,
     sda             => sda,
     scl             => scl,
-    clear_intensity => light_intensity
+    clear_intensity => clear_intensity,
+    red_intensity   => red_intensity,
+    green_intensity => green_intensity,
+    blue_intensity  => blue_intensity
   );
 
+
+  --
+  -- Simple multiplexer which selects the channel that we're looking at.
+  --
+  with sw 
+  select active_intensity <=
+    clear_intensity when "00",
+    red_intensity   when "01",
+    green_intensity when "10",
+    blue_intensity  when others;
+
+
+  --
+  -- Instatiate a seven-segment display driver.
+  --
   SSEG_DISPLAY_DRIVER:
   entity sseg_driver port map(
     clk          => clk,
-    leftmost     => light_intensity(15 downto 12),
-    left_center  => light_intensity(11 downto 8),
-    right_center => light_intensity(7 downto 4),
-    rightmost    => light_intensity(3 downto 0),
+    leftmost     => active_intensity(15 downto 12),
+    left_center  => active_intensity(11 downto 8),
+    right_center => active_intensity(7 downto 4),
+    rightmost    => active_intensity(3 downto 0),
     cathodes     => seg,
     anodes       => an
   );

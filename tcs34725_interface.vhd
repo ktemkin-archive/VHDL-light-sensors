@@ -53,8 +53,8 @@ entity tcs34725_interface is
     --Light sensor reading...
     clear_intensity : out std_logic_vector(15 downto 0);
     red_intensity   : out std_logic_vector(15 downto 0);
-    blue_intesity   : out std_logic_vector(15 downto 0);
-    green_intensity : out std_logic_vector(15 downto 0)
+    green_intensity : out std_logic_vector(15 downto 0);
+    blue_intensity  : out std_logic_vector(15 downto 0)
   );
 end tcs34725_interface;
 
@@ -84,7 +84,8 @@ architecture Behavioral of tcs34725_interface is
 
   --Core state machine logic.
   type state_type is (STARTUP, SEND_POWER_COMMAND, TURN_POWER_ON,
-                      WAIT_BEFORE_READING, SEND_READ_COMMAND, READ_LOW_BYTE, READ_HIGH_BYTE); --READ_BYTES);
+                      WAIT_BEFORE_READING, SEND_READ_COMMAND, START_READ, 
+                      FINISH_READ_AND_CONTINUE, FINISH_READ_AND_RESTART);
   signal state, next_state : state_type := STARTUP;
 
   --Create a simple read buffer for each of the sequential bytes.
@@ -92,7 +93,7 @@ architecture Behavioral of tcs34725_interface is
   signal read_buffer : byte_buffer(7 downto 0);
 
   --Signal which stores the current index in the byte buffer.
-  signal current_byte_number : integer range 0 to 7;
+  signal current_byte_number      : integer range 8 downto 0   := 0;
 
 
 begin
@@ -121,15 +122,32 @@ begin
 	);
 
   --
-  -- Rising edge detect for the I2C controller's "in use" signal.
+  -- Edge detect for the I2C controller's "in use" signal.
   --
   -- A rising edge of this signal denotes that the controller has accepted our data,
   -- and allows progression of our FSM.
   --
   controller_was_in_use    <= controller_in_use when rising_edge(clk);
   controller_accepted_data <= controller_in_use and not controller_was_in_use;
-  new_data_available       <= reading and not controller_in_use and controller_was_in_use;
 
+  --
+  -- Output mappings.
+  -- The output from the light sensor is recieved as a block of eight bytes,
+  -- this breaks that block into Clear/RGB data.
+  --
+  clear_intensity(15 downto 8) <= read_buffer(1);
+  clear_intensity(7  downto 0) <= read_buffer(0);
+  red_intensity(15 downto 8)   <= read_buffer(3);
+  red_intensity(7  downto 0)   <= read_buffer(2);
+  green_intensity(15 downto 8) <= read_buffer(5);
+  green_intensity(7  downto 0) <= read_buffer(4);
+  blue_intensity(15 downto 8)  <= read_buffer(7);
+  blue_intensity(7  downto 0)  <= read_buffer(6);
+
+
+  --
+  -- Main control FSM for the I2C light sensor.
+  --
   CONTROL_FSM:
   process(clk)
   begin
@@ -143,7 +161,6 @@ begin
       --Keep the following signals low unless asserted.
       --(This also prevents us from inferring additional memory.)
       data_to_write      <= (others => '0');
-
 
 
       case state is
@@ -200,19 +217,11 @@ begin
 
           --Ensure we are not transmitting during for a
           --least a short period between readings.
-          transaction_active <= '0';
+          transaction_active  <= '0';
+          current_byte_number <= 0;
 
           --Wait for the transmitter to become idle.
           if controller_in_use = '0' then
-
-            --In most cases, we've just come from the READ_HIGH_BYTE state,
-            --and the last read data is the correct high byte of our light intensity.
-            --(If we've just started up, we'll produce one cycle of gargage; but this
-            -- shouldn't affect any designs. If this affects yours, you'll need to
-            -- create a duplicate of this state which is only reached after a successful
-            -- reading.)
-            clear_intensity(15 downto 8) <= last_read_data;
-
             state <= SEND_READ_COMMAND;
           end if;
 
@@ -225,9 +234,9 @@ begin
 
           --Set up the device to write to the command register,
           --indicating that we want to read multiple bytes from the ADC register.
-          transaction_active  <= '1';
-          reading       <= write;
-          current_byte_number <= 0;
+          transaction_active      <= '1';
+          reading                 <= write;
+          current_byte_number     <= 0;
           
 
           --Select the device's primary control register.
@@ -236,57 +245,85 @@ begin
           --Once the controller has accepted the command,
           --move to the state where we'll read from the device itself.
           if controller_accepted_data = '1' then
-            state <= READ_LOW_BYTE;
+            state <= START_READ;
           end if;
 
 
         --
-        -- Read the ADC low byte.
-        -- This reads the low byte of the ADC.
+        -- Start a read of a single byte of ADC data.
+        -- In this state, we set up our read data, and wait for the
+        -- light sensor to accept it.
         --
-        when READ_LOW_BYTE =>
+        when START_READ =>
 
           --Set up the device to write to the command register,
           --indicating that we want to read multiple bytes from the ADC register.
-          transaction_active <= '1';
-          reading      <= read;
+          transaction_active      <= '1';
+          reading                 <= read;
 
-
-          --Once the controller has initiated the read
-          --move to read the subsequent bit.
+          --Wait for the controller to accept the read instruction.
           if controller_accepted_data = '1' then
-            state <= READ_HIGH_BYTE;
+           
+            --If we've just initiated our final read, finish the read
+            --and then start the read again from the beginning.
+            if current_byte_number = read_buffer'high then
+              state <= FINISH_READ_AND_RESTART;
+
+            --Otherwise, finish the read, but keep populating the buffer.
+            else
+              state <= FINISH_READ_AND_CONTINUE;
+
+            end if;
           end if;
 
-
-        -- Read the ADC low byte.
-        -- This reads the low byte of the ADC.
         --
-        when READ_HIGH_BYTE =>
+        -- Finish a read of a single byte of ADC data,
+        -- and then continue reading.
+        --
+        when FINISH_READ_AND_CONTINUE =>
 
-          --If the controller has gone idle, the most recently read data
-          --will be the data read in the last state; or the ADC low byte.
+          --Wait for the I2C controller to finish reading...
           if controller_in_use = '0' then
-            clear_intensity(7 downto 0) <= last_read_data;
+
+            --...capture the read result.
+            read_buffer(current_byte_number) <= last_read_data;
+
+            --... move to the next spot in the read buffer.
+            current_byte_number <= current_byte_number + 1;
+
+            ---... and finish reading.
+            state <= START_READ;
+
           end if;
 
-          --Once the controller has accepted the data,
-          if controller_accepted_data = '1' then
+        
+        --
+        -- Finish a read of a single byte of ADC data,
+        -- and then restart from the beginning of the buffer.
+        --
+        when FINISH_READ_AND_RESTART =>
+
+          --Since we're not going to continue reading,
+          --allow the transaction to end.
+          transaction_active <= '0';
+
+          --Wait for the I2C controller to finish reading...
+          if controller_in_use = '0' then
+
+            --...capture the read result.
+            read_buffer(current_byte_number) <= last_read_data;
+
+            ---... and restart the process.
             state <= WAIT_BEFORE_READING;
+
           end if;
 
 
 
-          
+        end case; 
+      end if;
+    end process;
 
 
-
-
-      end case; 
-    end if;
-
-  end process;
-
-
-end Behavioral;
+  end Behavioral;
 
