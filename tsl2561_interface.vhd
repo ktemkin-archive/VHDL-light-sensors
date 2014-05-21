@@ -34,7 +34,7 @@ entity tsl2561_interface is
 
     --This is the address for a floating ADDR SEL pin.
     --If the ADDR SEL pin is tied high, provide "1001001" instead.
-    --If the ADDR SEL pin is tied low, provide  "0001100" instead.
+    --If the ADDR SEL pin is tied low, provide  "0101001" instead.
     address : std_logic_vector(6 downto 0) := "0111001";
 
     --The clock frequency of the board you're using.
